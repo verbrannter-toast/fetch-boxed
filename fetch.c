@@ -28,7 +28,7 @@ static void handle_signal(int sig) {
   _exit(0);
 }
 
-static volatile int term_resized = 0;
+static volatile sig_atomic_t term_resized = 0;
 
 static void handle_winch(int sig) {
   (void)sig;
@@ -139,7 +139,9 @@ static void process_logo_row(int row) {
           if (has_num && ((num >= 30 && num <= 37) || num == 39 ||
                           (num >= 90 && num <= 97)))
             cur_color = num;
-          if (has_num && num == 0)
+          if (has_num && num == 1)
+            ; // bold flag — ignored; colors are always output bold
+          if (has_num && (num == 0 || num == 22))
             cur_color = 0;
           num = 0;
           has_num = 0;
@@ -374,24 +376,31 @@ static int load_logo_ff_colored(const char *name) {
     while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
       buf[--len] = '\0';
 
-    // Truncate at first cursor movement escape (marks end of logo content)
+    // Find last SGR escape end before any cursor movement (marks end of logo content)
     int truncated = 0;
+    int last_sgr_end = -1;
     for (int i = 0; i < len - 2; i++) {
       if (is_cursor_escape(&buf[i])) {
         int cut = i;
-        if (cut >= 3 && buf[cut - 1] == 'm' && buf[cut - 2] == '[' &&
-            buf[cut - 3] == '\033')
-          cut -= 3;
-        else if (cut >= 4 && buf[cut - 1] == 'm' && buf[cut - 2] == '0' &&
-                 buf[cut - 3] == '[' && buf[cut - 4] == '\033')
-          cut -= 4;
+        // If we found a previous complete SGR, cut after it (keep the color reset)
+        if (last_sgr_end >= 0)
+          cut = last_sgr_end;
         buf[cut] = '\0';
         len = cut;
         truncated = 1;
         break;
       }
+      // Track end positions of SGR sequences
+      if (buf[i] == '\033' && buf[i + 1] == '[') {
+        int j = i + 2;
+        while (buf[j] && ((buf[j] >= '0' && buf[j] <= '9') || buf[j] == ';'))
+          j++;
+        if (buf[j] == 'm') {
+          last_sgr_end = j + 1;
+          i = j;
+        }
+      }
     }
-
 
     if (len == 0 && logo_rows == 0)
       continue;
@@ -1058,7 +1067,6 @@ static void gather_shell(void) {
     if (fgets(buf, sizeof(buf), fp)) {
       // Extract version number from first line
       // e.g. "zsh 5.9.0.3-test (aarch64...)" or "bash 5.2.26(1)-release"
-      char *p = buf;
       // Find the version part after the shell name
       char *ver = strstr(buf, name);
       if (ver) {
@@ -1476,16 +1484,16 @@ static void gather_gpu(void) {
 }
 
 static void gather_memory(void) {
-  long total = 0, avail = 0;
+  long long total = 0, avail = 0;
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp)
     return;
   char buf[128];
   while (fgets(buf, sizeof(buf), fp)) {
     if (strncmp(buf, "MemTotal:", 9) == 0)
-      sscanf(buf + 9, " %ld", &total);
+      sscanf(buf + 9, " %lld", &total);
     else if (strncmp(buf, "MemAvailable:", 13) == 0)
-      sscanf(buf + 13, " %ld", &avail);
+      sscanf(buf + 13, " %lld", &avail);
   }
   fclose(fp);
   if (total <= 0)
@@ -1503,22 +1511,22 @@ static void gather_memory(void) {
 }
 
 static void gather_swap(void) {
-  long total = 0, free_s = 0;
+  long long total = 0, free_s = 0;
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp)
     return;
   char buf[128];
   while (fgets(buf, sizeof(buf), fp)) {
     if (strncmp(buf, "SwapTotal:", 10) == 0)
-      sscanf(buf + 10, " %ld", &total);
+      sscanf(buf + 10, " %lld", &total);
     else if (strncmp(buf, "SwapFree:", 9) == 0)
-      sscanf(buf + 9, " %ld", &free_s);
+      sscanf(buf + 9, " %lld", &free_s);
   }
   fclose(fp);
   if (total <= 0)
     return;
 
-  long used = total - free_s;
+  long long used = total - free_s;
   int pct = (int)(used * 100 / total);
   const char *color = pct >= 80 ? "31" : pct >= 50 ? "93" : "32";
 
@@ -1535,8 +1543,8 @@ static void gather_disk(void) {
   if (statvfs("/", &st) != 0)
     return;
 
-  float total_gib = (float)st.f_blocks * st.f_frsize / (1024 * 1024 * 1024);
-  float free_gib = (float)st.f_bfree * st.f_frsize / (1024 * 1024 * 1024);
+  float total_gib = (float)st.f_blocks * (float)st.f_frsize / (1024 * 1024 * 1024);
+  float free_gib = (float)st.f_bfree * (float)st.f_frsize / (1024 * 1024 * 1024);
   float used_gib = total_gib - free_gib;
   int pct = (int)(used_gib * 100 / total_gib);
   const char *color = pct >= 80 ? "31" : pct >= 50 ? "93" : "32";
@@ -1717,19 +1725,51 @@ static void gather_terminal(void) {
     strncpy(term, tp, sizeof(term) - 1);
   } else if (getenv("KITTY_WINDOW_ID")) {
     strcpy(term, "kitty");
+  } else if (getenv("ALACRITTY_LOG")) {
+    strcpy(term, "alacritty");
+  } else if (getenv("WEZTERM_PANE")) {
+    strcpy(term, "wezterm");
+  } else if (getenv("GHOSTTY_RESOURCES_DIR")) {
+    strcpy(term, "ghostty");
+  } else if (getenv("TERMINAL_EMULATOR")) {
+    strncpy(term, getenv("TERMINAL_EMULATOR"), sizeof(term) - 1);
   } else {
-    // Walk up the process tree from fetch's actual PID
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd),
-             "ps -o comm= -p $(ps -o ppid= -p %d) 2>/dev/null", getpid());
-    FILE *fp = popen(cmd, "r");
-    if (fp) {
-      if (fgets(term, sizeof(term), fp)) {
-        int len = strlen(term);
-        while (len > 0 && (term[len - 1] == '\n' || term[len - 1] == '\r'))
-          term[--len] = '\0';
+    // Walk up the process tree by reading /proc directly
+    pid_t pid = getpid();
+    for (int depth = 0; depth < 4; depth++) {
+      // Get PPID from /proc/<pid>/status
+      char path[64];
+      snprintf(path, sizeof(path), "/proc/%d/status", pid);
+      FILE *fp = fopen(path, "r");
+      if (!fp) break;
+      pid_t ppid = 0;
+      char buf[128];
+      while (fgets(buf, sizeof(buf), fp)) {
+        if (sscanf(buf, "PPid:\t%d", &ppid) == 1)
+          break;
       }
-      pclose(fp);
+      fclose(fp);
+      if (ppid <= 0) break;
+      pid = ppid;
+
+      // Get command name from /proc/<pid>/comm
+      snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+      fp = fopen(path, "r");
+      if (!fp) break;
+      if (!fgets(term, sizeof(term), fp)) { fclose(fp); break; }
+      fclose(fp);
+      int len = strlen(term);
+      while (len > 0 && (term[len - 1] == '\n' || term[len - 1] == '\r'))
+        term[--len] = '\0';
+
+      // If we found a non-shell, stop
+      if (term[0] && strcmp(term, "bash") != 0 && strcmp(term, "zsh") != 0 &&
+          strcmp(term, "sh") != 0 && strcmp(term, "dash") != 0 &&
+          strcmp(term, "fish") != 0 && strcmp(term, "nu") != 0 &&
+          strcmp(term, "elvish") != 0 && strcmp(term, "xonsh") != 0 &&
+          strcmp(term, "tcsh") != 0 && strcmp(term, "csh") != 0)
+        break;
+      term[0] = '\0';
     }
   }
   if (term[0])
@@ -1838,19 +1878,16 @@ static void gather_font(void) {
     add_info("Font", "%s [GTK3]", font);
 }
 
-// Screen buffer: each cell holds one UTF-8 codepoint (up to 4 bytes + NUL)
-static char screen[MAX_HEIGHT][ANIM_WIDTH][5];
+// Render buffers: shade index (-1 = empty, 0..smax = shading char), z-buffer, color
+static signed char shade_idx[MAX_HEIGHT][ANIM_WIDTH];
 static float zbuf[MAX_HEIGHT][ANIM_WIDTH];
 static int colorbuf[MAX_HEIGHT][ANIM_WIDTH];
 
 static void clear_buf(void) {
-  for (int i = 0; i < render_height; i++)
-    for (int j = 0; j < ANIM_WIDTH; j++) {
-      screen[i][j][0] = ' ';
-      screen[i][j][1] = '\0';
-      zbuf[i][j] = -1e9f;
-      colorbuf[i][j] = 0;
-    }
+  int n = render_height * ANIM_WIDTH;
+  memset(shade_idx, -1, n);
+  memset(zbuf, 0, n * sizeof(float));
+  memset(colorbuf, 0, n * sizeof(int));
 }
 
 static void build_points(void) {
@@ -1863,7 +1900,16 @@ static void build_points(void) {
   if (Z_LAYERS < 6)
     Z_LAYERS = 6;
 
-  float hmap[MAX_LOGO_ROWS][MAX_LOGO_COLS];
+  float(*hmap)[MAX_LOGO_COLS] = malloc(sizeof(float[MAX_LOGO_ROWS][MAX_LOGO_COLS]));
+  float(*gnx)[MAX_LOGO_COLS] = malloc(sizeof(float[MAX_LOGO_ROWS][MAX_LOGO_COLS]));
+  float(*gny)[MAX_LOGO_COLS] = malloc(sizeof(float[MAX_LOGO_ROWS][MAX_LOGO_COLS]));
+  float(*gnz)[MAX_LOGO_COLS] = malloc(sizeof(float[MAX_LOGO_ROWS][MAX_LOGO_COLS]));
+  if (!hmap || !gnx || !gny || !gnz) {
+    free(hmap); free(gnx); free(gny); free(gnz);
+    POINT_COUNT = 0;
+    return;
+  }
+
   for (int r = 0; r < logo_rows; r++) {
     for (int c = 0; c < logo_cols; c++) {
       if (c < logo_cell_counts[r])
@@ -1872,10 +1918,6 @@ static void build_points(void) {
         hmap[r][c] = 0.0f;
     }
   }
-
-  float gnx[MAX_LOGO_ROWS][MAX_LOGO_COLS];
-  float gny[MAX_LOGO_ROWS][MAX_LOGO_COLS];
-  float gnz[MAX_LOGO_ROWS][MAX_LOGO_COLS];
   for (int r = 0; r < logo_rows; r++) {
     for (int c = 0; c < logo_cols; c++) {
       if (hmap[r][c] <= 0.0f) {
@@ -2023,6 +2065,10 @@ static void build_points(void) {
     }
   }
   POINT_COUNT = idx;
+  free(hmap);
+  free(gnx);
+  free(gny);
+  free(gnz);
 }
 
 static float color_threshold = 0.5f;
@@ -2210,9 +2256,9 @@ int main(int argc, char **argv) {
   } else {
     // Try logo.txt first for distro hint, then detect
     load_logo_file();
-    if (file_distro[0])
+    if (file_distro[0]) {
       strncpy(distro, file_distro, sizeof(distro) - 1);
-    else
+    } else
       detect_distro(distro, sizeof(distro));
 
     // Try fastfetch for colored logo (prefer over plain logo.txt)
@@ -2220,7 +2266,8 @@ int main(int argc, char **argv) {
     if (distro[0]) {
       // Reset logo state to try fastfetch
       int saved_rows = logo_rows;
-      char saved_data[MAX_LOGO_ROWS][512];
+      char(*saved_data)[512] = malloc(logo_rows * 512);
+      if (saved_data) {
       for (int i = 0; i < saved_rows; i++)
         memcpy(saved_data[i], logo_data[i], 512);
       logo_rows = 0;
@@ -2234,8 +2281,9 @@ int main(int argc, char **argv) {
         char *tok = strtok(like_copy, " ");
         while (tok && !got_logo) {
           got_logo = load_logo_fastfetch(tok);
-          if (got_logo)
+          if (got_logo) {
             strncpy(distro, tok, sizeof(distro) - 1);
+          }
           tok = strtok(NULL, " ");
         }
       }
@@ -2244,6 +2292,8 @@ int main(int argc, char **argv) {
         logo_rows = saved_rows;
         for (int i = 0; i < saved_rows; i++)
           memcpy(logo_data[i], saved_data[i], 512);
+      }
+      free(saved_data);
       }
     }
     if (!got_logo && logo_rows == 0) {
@@ -2336,13 +2386,17 @@ int main(int argc, char **argv) {
   float B = 0.0f;
   float K1 = 37.0f * render_height / 36.0f;
   const float K2 = 5.5f;
+  // Pre-compute Blinn-Phong half-vector (view direction is constant (0,0,-1))
+  const float hx0 = (light_x + 0.0f), hy0 = (light_y + 0.0f), hz0 = (light_z - 1.0f);
+  const float hl0 = sqrtf(hx0 * hx0 + hy0 * hy0 + hz0 * hz0);
+  const float hlx = hx0 / hl0, hly = hy0 / hl0, hlz = hz0 / hl0;
 
   signal(SIGINT, handle_signal);
   signal(SIGTERM, handle_signal);
   signal(SIGWINCH, handle_winch);
   atexit(cleanup);
 
-  int fetch_start = 1;
+  int fetch_start = show_info ? 1 : 0;
 
   if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
     termios_saved = 1;
@@ -2405,12 +2459,13 @@ int main(int argc, char **argv) {
     float cB = cosf(B), sB = sinf(B);
 
     const float lx = light_x, ly = light_y, lz = light_z;
-    const float vx = 0.0f, vy = 0.0f, vz = -1.0f;
-    float hx = lx + vx, hy = ly + vy, hz = lz + vz;
-    float hl = sqrtf(hx * hx + hy * hy + hz * hz);
-    hx /= hl;
-    hy /= hl;
-    hz /= hl;
+    const float y_center = fetch_line_count > 0
+                              ? fetch_start + fetch_line_count * 0.5f
+                              : render_height * 0.5f;
+    const int smax = shading_count - 1;
+    const float half_aw = (float)ANIM_WIDTH * 0.5f;
+    const float k1x2 = K1 * 2.0f;
+    const int aw = ANIM_WIDTH;
 
     for (int i = 0; i < POINT_COUNT; i++) {
       float px = PX[i], py = PY[i], pz = PZ[i];
@@ -2432,12 +2487,9 @@ int main(int argc, char **argv) {
       if (zc < 0.1f)
         continue;
       float ooz = 1.0f / zc;
-      int xs = (int)((float)ANIM_WIDTH * 0.5f + K1 * 2.0f * x2 * ooz);
-      float y_center = fetch_line_count > 0
-                           ? fetch_start + fetch_line_count / 2.0f
-                           : render_height * 0.5f;
+      int xs = (int)(half_aw + k1x2 * x2 * ooz);
       int ys = (int)(y_center - K1 * y2 * ooz);
-      if (xs < 0 || xs >= ANIM_WIDTH || ys < 0 || ys >= render_height)
+      if (xs < 0 || xs >= aw || ys < 0 || ys >= render_height)
         continue;
 
       if (ooz > zbuf[ys][xs]) {
@@ -2445,7 +2497,7 @@ int main(int argc, char **argv) {
         if (diff < 0)
           diff = 0;
 
-        float spec_dot = nx2 * hx + ny2 * hy + nz2 * hz;
+        float spec_dot = nx2 * hlx + ny2 * hly + nz2 * hlz;
         if (spec_dot < 0)
           spec_dot = 0;
         float spec = spec_dot * spec_dot;
@@ -2457,56 +2509,110 @@ int main(int argc, char **argv) {
           L = 1.0f;
 
         zbuf[ys][xs] = ooz;
-        int ci = (int)(L * (shading_count - 1));
-        if (ci < 0)
-          ci = 0;
-        if (ci >= shading_count)
-          ci = shading_count - 1;
-        memcpy(screen[ys][xs], shading_chars[ci], 5);
+        int ci = (int)(L * smax);
+        if (ci < 0) ci = 0;
+        if (ci > smax) ci = smax;
+        shade_idx[ys][xs] = ci;
         colorbuf[ys][xs] = logo_has_ansi
                                ? PCOLOR[i]
                                : ((PWEIGHT[i] >= color_threshold) ? 1 : 0);
       }
     }
 
-    printf("\033[H");
-    for (int i = 0; i < render_height; i++) {
+    // Batch entire frame into a single write (reuse buffer across frames)
+    static char *out_buf = NULL;
+    static size_t out_cap = 0;
+    size_t need = render_height * 2048u + 64;
+    if (need > out_cap) {
+      free(out_buf);
+      out_buf = malloc(need);
+      out_cap = out_buf ? need : 0;
+    }
+    if (!out_buf) {
+      printf("\033[?25h");
+      return 1;
+    }
+    char *p = out_buf;
+    char *end = out_buf + need - 8;
+    *p++ = '\033'; *p++ = '[';
+    *p++ = 'H';
+
+    // Pre-formatted reset + newline sequences
+    const char reset_seq[] = "\033[0m";
+    const char clr_seq[] = "\033[K";
+
+    // Pre-formatted common ANSI color escape prefix: \033[1;XXm
+    // c is in 30-37 or 90-97, pre-encode the 6-byte prefix (cached across frames)
+    static char ansi_tbl[128][8];
+    static int ansi_len[128];
+    int inner_len = strlen(color_inner);
+    int outer_len = strlen(color_outer);
+
+    for (int i = 0; i < render_height && p + 8 < end; i++) {
       if (!use_color) {
-        for (int j = 0; j < ANIM_WIDTH; j++)
-          fputs(screen[i][j], stdout);
+        for (int j = 0; j < ANIM_WIDTH && p + 4 < end; j++) {
+          int ci = shade_idx[i][j];
+          if (ci < 0) { *p++ = ' '; continue; }
+          const char *sc = shading_chars[ci];
+          int k = 0;
+          while (k < 4 && sc[k]) { p[k] = sc[k]; k++; }
+          p += k ? k : 1;
+        }
       } else {
         int prev_color = -1;
-        for (int j = 0; j < ANIM_WIDTH; j++) {
-          if (screen[i][j][0] == ' ' && screen[i][j][1] == '\0') {
+        for (int j = 0; j < ANIM_WIDTH && p + 16 < end; j++) {
+          int ci = shade_idx[i][j];
+          if (ci < 0) {
             if (prev_color != -1) {
-              printf("\033[0m");
+              memcpy(p, reset_seq, 4); p += 4;
               prev_color = -1;
             }
-            fputc(' ', stdout);
+            *p++ = ' ';
           } else {
             int c = colorbuf[i][j];
             if (c != prev_color) {
-              if (logo_has_ansi && c > 0)
-                printf("\033[1;%dm", c);
-              else
-                printf("%s", c == 1 ? color_inner : color_outer);
+              if (logo_has_ansi && c > 0 && c < 128) {
+                // Build ANSI escape lazily on first use
+                if (!ansi_len[c]) {
+                  ansi_len[c] = snprintf(ansi_tbl[c], sizeof(ansi_tbl[c]),
+                                         "\033[1;%dm", c);
+                }
+                memcpy(p, ansi_tbl[c], ansi_len[c]);
+                p += ansi_len[c];
+              } else {
+                const char *cs = (c == 1) ? color_inner : color_outer;
+                int clen = (c == 1) ? inner_len : outer_len;
+                memcpy(p, cs, clen); p += clen;
+              }
               prev_color = c;
             }
-            fputs(screen[i][j], stdout);
+            const char *sc = shading_chars[ci];
+            int k = 0;
+            while (k < 4 && sc[k]) { p[k] = sc[k]; k++; }
+            p += k ? k : 1;
           }
         }
-        if (prev_color != -1)
-          printf("\033[0m");
+        if (prev_color != -1 && p + 4 < end) {
+          memcpy(p, reset_seq, 4); p += 4;
+        }
       }
 
       int fi = i - fetch_start;
-      if (fi >= 0 && fi < fetch_line_count) {
-        printf("%*s%s", GAP, "", fetch_lines[fi]);
+      if (fi >= 0 && fi < fetch_line_count && p + GAP + 4 < end) {
+        memset(p, ' ', GAP); p += GAP;
+        size_t flen = strlen(fetch_lines[fi]);
+        size_t remain = end - p;
+        if (flen > remain) flen = remain;
+        memcpy(p, fetch_lines[fi], flen);
+        p += flen;
       }
 
-      printf("\033[K\n");
+      // Erase to end of line + newline
+      if (p + 8 >= end) break;
+      memcpy(p, clr_seq, 4); p += 4;
+      *p++ = '\n';
     }
-    fflush(stdout);
+    write(STDOUT_FILENO, out_buf, p - out_buf);
     usleep(50000);
   }
 
