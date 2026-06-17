@@ -73,6 +73,12 @@ You also need to import the nix package in your ```home.nix```. Check ```nix/hom
 }
 ```
 
+### Homebrew (macOS)
+```bash
+brew tap areofyl/fetch
+brew install fetch-git
+```
+
 ### Gentoo Linux (GURU)
 You can install `fetch` from the GURU repository using:
 
