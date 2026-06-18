@@ -5,7 +5,7 @@
   # linux dependencies
   makeWrapper,
   fastfetch,
-  pciutils
+  pciutils,
 }:
 
 stdenv.mkDerivation (finalAttrs: {
@@ -23,7 +23,12 @@ stdenv.mkDerivation (finalAttrs: {
   nativeBuildInputs = [ makeWrapper ];
   postInstall = ''
     wrapProgram $out/bin/fetch \
-    --prefix PATH : ${lib.makeBinPath [ fastfetch pciutils ]}
+    --prefix PATH : ${
+      lib.makeBinPath [
+        fastfetch
+        pciutils
+      ]
+    }
   '';
 
   meta = {

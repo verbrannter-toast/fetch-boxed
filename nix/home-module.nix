@@ -1,4 +1,9 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.programs.fetch;
@@ -26,7 +31,8 @@ let
     "locale"
     "colors"
   ];
-in {
+in
+{
   options.programs.fetch = {
     enable = lib.mkEnableOption "fetch";
 
@@ -63,15 +69,30 @@ in {
     };
 
     light = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [
-        "top-left" "top-right" "top" "left" "right" "front" "bottom-left" "bottom-right"
-      ]);
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "top-left"
+          "top-right"
+          "top"
+          "left"
+          "right"
+          "front"
+          "bottom-left"
+          "bottom-right"
+        ]
+      );
       default = null;
       description = "Light direction for 3D shading.";
     };
 
     spin = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [ "x" "y" "xy" ]);
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "x"
+          "y"
+          "xy"
+        ]
+      );
       default = null;
       description = "Rotation axis for the 3D animation.";
     };
@@ -110,11 +131,11 @@ in {
         "label_color=${cfg.labelColor}"
         "separator=${cfg.separator}"
         (lib.optionalString (cfg.shading != null) "shading=${cfg.shading}")
-        (lib.optionalString (cfg.light != null)   "light=${cfg.light}")
-        (lib.optionalString (cfg.spin != null)    "spin=${cfg.spin}")
-        (lib.optionalString (cfg.speed != null)   "speed=${toString cfg.speed}")
-        (lib.optionalString (cfg.size != null)    "size=${toString cfg.size}")
-        (lib.optionalString (cfg.height != null)  "height=${toString cfg.height}")
+        (lib.optionalString (cfg.light != null) "light=${cfg.light}")
+        (lib.optionalString (cfg.spin != null) "spin=${cfg.spin}")
+        (lib.optionalString (cfg.speed != null) "speed=${toString cfg.speed}")
+        (lib.optionalString (cfg.size != null) "size=${toString cfg.size}")
+        (lib.optionalString (cfg.height != null) "height=${toString cfg.height}")
         cfg.extraConfig
       ]
     );
