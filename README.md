@@ -56,7 +56,7 @@ areofyl-fetch.url = "github:areofyl/fetch";
 ```
 
 #### Home-manager
-You also need to import the nix package in your ```home.nix```. Check ```nix/home-module.nix``` for the options. Most are the same but hyphens can not be used so camel-case has been used for those options instead.
+You also need to import the nix package in your ```home.nix```. [Here are all the available options](https://github.com/areofyl/fetch/tree/main/nix).
 
 ```nix
 { pkgs, inputs, ... }: 

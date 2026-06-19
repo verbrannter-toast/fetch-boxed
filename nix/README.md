@@ -76,6 +76,8 @@ Options:
   Options:
   ```
     "mMz"
+    ".Mm|"
+    "█░.Mm
   ```
 
   Ex: ```shading = "mMz"; ```

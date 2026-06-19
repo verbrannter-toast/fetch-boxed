@@ -11,6 +11,8 @@
 stdenv.mkDerivation (finalAttrs: {
   pname = "fetch";
   version = "2.1.0";
+  __structuredAttrs = true;
+  strictDeps = true;
 
   src = fetchFromGitHub {
     owner = "areofyl";
