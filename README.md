@@ -1,7 +1,5 @@
 # fetch
 
-[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/ffac27ff-b411-493b-9f06-8a2c44629991.svg)](https://oosmetrics.com/repo/areofyl/fetch)
-
 A donut.c-inspired fetch tool that spins your distro logo in 3D with live-updating system info.
 
 ![demo](demo.gif)
