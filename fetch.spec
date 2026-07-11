@@ -1,9 +1,9 @@
 Name:           fetch
-Version:        1.0.0
+Version:        2.1.0
 Release:        1%{?dist}
 Summary:        Animated 3D fetch tool for your terminal
 
-License:        MIT
+License:        ISC
 URL:            https://github.com/areofyl/fetch
 Source0:        %{url}/archive/refs/heads/main.tar.gz#/fetch-%{version}.tar.gz
 
@@ -32,5 +32,5 @@ config — no external dependencies required.
 %{_bindir}/fetch
 
 %changelog
-* Mon Jun 09 2025 Youssef Tarek <amazingritro66@gmail.com> - 1.0.0-1
+* Mon Jun 09 2026 Youssef Tarek <amazingritro66@gmail.com> - 2.1.0-1
 - Initial RPM package for Fedora
