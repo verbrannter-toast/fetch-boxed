@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/statvfs.h>
 #include <sys/utsname.h>
