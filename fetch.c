@@ -16,6 +16,15 @@
 #include <termios.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#include <libproc.h>
+#include <IOKit/ps/IOPowerSources.h>
+#include <IOKit/ps/IOPSKeys.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
+
 static struct termios orig_termios;
 static int termios_saved = 0;
 
@@ -108,6 +117,33 @@ static void parse_shading(const char *str) {
     shading_count = 1;
   }
 }
+
+#ifdef __APPLE__
+static int sysctl_str(const char *name, char *out, int maxlen) {
+  size_t len = maxlen - 1;
+  if (sysctlbyname(name, out, &len, NULL, 0) == 0) {
+    out[len] = '\0';
+    return 1;
+  }
+  return 0;
+}
+
+static long sysctl_long(const char *name) {
+  long val = 0;
+  size_t len = sizeof(val);
+  if (sysctlbyname(name, &val, &len, NULL, 0) == 0)
+    return val;
+  return 0;
+}
+
+static int sysctl_int(const char *name) {
+  int val = 0;
+  size_t len = sizeof(val);
+  if (sysctlbyname(name, &val, &len, NULL, 0) == 0)
+    return val;
+  return 0;
+}
+#endif
 
 // --- Logo storage (codepoint-aware) ---
 
@@ -579,9 +615,26 @@ static int detect_distro_os_release(char *out, int maxlen) {
 }
 
 static int detect_distro(char *out, int maxlen) {
+#ifdef __APPLE__
+  if (detect_distro_fastfetch(out, maxlen))
+    return 1;
+  FILE *fp = popen("sw_vers -productName 2>/dev/null", "r");
+  if (fp) {
+    char buf[64];
+    if (fgets(buf, sizeof(buf), fp)) {
+      int len = strlen(buf);
+      while (len > 0 && (buf[len-1]=='\n'||buf[len-1]=='\r')) buf[--len]='\0';
+      if (len > 0 && len < maxlen) { memcpy(out, buf, len+1); pclose(fp); return 1; }
+    }
+    pclose(fp);
+  }
+  strncpy(out, "macos", maxlen-1);
+  return 1;
+#else
   if (detect_distro_fastfetch(out, maxlen))
     return 1;
   return detect_distro_os_release(out, maxlen);
+#endif
 }
 
 static void load_default_logo(void) {
@@ -912,6 +965,18 @@ static void gather_title(void) {
 }
 
 static void gather_os(void) {
+#ifdef __APPLE__
+  char version[64] = "";
+  if (sysctl_str("kern.osproductversion", version, sizeof(version))) {
+    struct utsname u;
+    uname(&u);
+    add_info("OS", "macOS %s %s", version, u.machine);
+  } else {
+    struct utsname u;
+    uname(&u);
+    add_info("OS", "%s %s", u.sysname, u.machine);
+  }
+#else
   char pretty[128] = "";
   FILE *fp = fopen("/etc/os-release", "r");
   if (fp) {
@@ -940,9 +1005,15 @@ static void gather_os(void) {
   uname(&u);
 
   add_info("OS", "%s %s", pretty, u.machine);
+#endif
 }
 
 static void gather_host(void) {
+#ifdef __APPLE__
+  char model[128] = "";
+  if (sysctl_str("hw.model", model, sizeof(model)))
+    add_info("Host", "%s", model);
+#else
   char model[128] = "";
   // Try device-tree first (ARM/Apple Silicon), then DMI (x86)
   FILE *fp = fopen("/proc/device-tree/model", "r");
@@ -960,6 +1031,7 @@ static void gather_host(void) {
   }
   if (model[0])
     add_info("Host", "%s", model);
+#endif
 }
 
 static void gather_kernel(void) {
@@ -969,6 +1041,13 @@ static void gather_kernel(void) {
 }
 
 static void gather_uptime(void) {
+#ifdef __APPLE__
+  struct timeval bt;
+  size_t len = sizeof(bt);
+  if (sysctlbyname("kern.boottime", &bt, &len, NULL, 0) != 0)
+    return;
+  double secs = difftime(time(NULL), bt.tv_sec);
+#else
   FILE *fp = fopen("/proc/uptime", "r");
   if (!fp)
     return;
@@ -976,6 +1055,7 @@ static void gather_uptime(void) {
   if (fscanf(fp, "%lf", &secs) != 1)
     secs = 0;
   fclose(fp);
+#endif
 
   int total = (int)secs;
   int days = total / 86400;
@@ -1050,6 +1130,23 @@ static void gather_packages(void) {
   char val[128] = "";
   int n;
 
+#ifdef __APPLE__
+  // Homebrew — check both ARM and Intel Cellar paths
+  const char *cellars[] = {"/opt/homebrew/Cellar", "/usr/local/Cellar", NULL};
+  int total = 0;
+  for (int i = 0; cellars[i]; i++) {
+    DIR *d = opendir(cellars[i]);
+    if (!d) continue;
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+      if (ent->d_name[0] == '.') continue;
+      total++;
+    }
+    closedir(d);
+  }
+  if (total > 0)
+    snprintf(val, sizeof(val), "%d (brew)", total);
+#else
   // emerge (Gentoo)
   n = count_emerge_pkgs();
   if (n > 0)
@@ -1091,6 +1188,7 @@ static void gather_packages(void) {
     if (n > 0)
       snprintf(val, sizeof(val), "%d (apk)", n);
   }
+#endif
 
   if (val[0])
     add_info("Packages", "%s", val);
@@ -1104,6 +1202,22 @@ static void gather_shell(void) {
   // since $SHELL is the login shell which may differ (e.g. fish launched
   // from bash)
   {
+#ifdef __APPLE__
+    struct kinfo_proc kp;
+    size_t klen = sizeof(kp);
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getppid()};
+    if (sysctl(mib, 4, &kp, &klen, NULL, 0) == 0) {
+      strncpy(shell_buf, kp.kp_proc.p_comm, sizeof(shell_buf) - 1);
+      shell_buf[sizeof(shell_buf) - 1] = '\0';
+      if (strcmp(shell_buf, "bash") == 0 || strcmp(shell_buf, "zsh") == 0 ||
+          strcmp(shell_buf, "fish") == 0 || strcmp(shell_buf, "dash") == 0 ||
+          strcmp(shell_buf, "sh") == 0 || strcmp(shell_buf, "nu") == 0 ||
+          strcmp(shell_buf, "elvish") == 0 || strcmp(shell_buf, "tcsh") == 0 ||
+          strcmp(shell_buf, "csh") == 0 || strcmp(shell_buf, "xonsh") == 0 ||
+          strcmp(shell_buf, "ksh") == 0 || strcmp(shell_buf, "ion") == 0)
+        shell = shell_buf;
+    }
+#else
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/comm", getppid());
     FILE *fp = fopen(path, "r");
@@ -1123,6 +1237,7 @@ static void gather_shell(void) {
       }
       fclose(fp);
     }
+#endif
   }
 
   // Fall back to $SHELL (login shell)
@@ -1176,6 +1291,46 @@ static void gather_shell(void) {
 }
 
 static void gather_display(void) {
+#ifdef __APPLE__
+  FILE *fp = popen("system_profiler SPDisplaysDataType 2>/dev/null", "r");
+  if (!fp) return;
+  char buf[512];
+  char name[64] = "", res[64] = "";
+  while (fgets(buf, sizeof(buf), fp)) {
+    if (!name[0]) {
+      char *p = strstr(buf, "Chipset Model:");
+      if (!p) p = strstr(buf, "Chip:");
+      if (p) {
+        p = strchr(p, ':');
+        if (p) {
+          p++;
+          while (*p == ' ') p++;
+          int len = strlen(p);
+          while (len > 0 && (p[len-1]=='\n'||p[len-1]=='\r')) p[--len]='\0';
+          if (len > 0 && len < (int)sizeof(name)) memcpy(name, p, len+1);
+        }
+      }
+    }
+    if (!res[0]) {
+      char *p = strstr(buf, "Resolution:");
+      if (p) {
+        p = strchr(p, ':');
+        if (p) {
+          p++;
+          while (*p == ' ') p++;
+          int len = strlen(p);
+          while (len > 0 && (p[len-1]=='\n'||p[len-1]=='\r')) p[--len]='\0';
+          if (len > 0 && len < (int)sizeof(res)) memcpy(res, p, len+1);
+        }
+      }
+    }
+  }
+  pclose(fp);
+  if (name[0] && res[0])
+    add_info("Display", "%s %s", name, res);
+  else if (res[0])
+    add_info("Display", "%s", res);
+#else
   DIR *d = opendir("/sys/class/drm");
   if (!d)
     return;
@@ -1249,9 +1404,13 @@ static void gather_display(void) {
     }
     closedir(d);
   }
+#endif
 }
 
 static void gather_wm(void) {
+#ifdef __APPLE__
+  add_info("WM", "Aqua");
+#else
   // Check WAYLAND_DISPLAY or XDG_SESSION_TYPE to determine session type
   char *wayland = getenv("WAYLAND_DISPLAY");
   char *session = getenv("XDG_SESSION_TYPE");
@@ -1333,9 +1492,25 @@ static void gather_wm(void) {
 
   if (wm[0])
     add_info("WM", "%s%s", wm, is_wayland ? " (Wayland)" : "");
+#endif
 }
 
 static void gather_cpu(void) {
+#ifdef __APPLE__
+  char name[128] = "";
+  if (sysctl_str("machdep.cpu.brand_string", name, sizeof(name))) {
+    int cores = sysctl_int("hw.ncpu");
+    long freq_hz = sysctl_long("hw.cpufrequency_max");
+    if (freq_hz > 0) {
+      float ghz = freq_hz / 1e9f;
+      add_info("CPU", "%s (%d) @ %.2f GHz", name, cores, ghz);
+    } else if (cores > 0) {
+      add_info("CPU", "%s (%d)", name, cores);
+    } else {
+      add_info("CPU", "%s", name);
+    }
+  }
+#else
   char name[128] = "";
   int cores = 0;
   float max_ghz = 0;
@@ -1426,6 +1601,7 @@ static void gather_cpu(void) {
     else
       add_info("CPU", "%s", name);
   }
+#endif
 }
 
 // Extract the human product name from `lspci -d VVVV:DDDD` output.
@@ -1489,6 +1665,29 @@ static int gpu_lookup_lspci(const char *pci_id, char *out, int outlen) {
 }
 
 static void gather_gpu(void) {
+#ifdef __APPLE__
+  FILE *fp = popen("system_profiler SPDisplaysDataType 2>/dev/null", "r");
+  if (!fp) return;
+  char buf[512];
+  char gpu[128] = "";
+  while (fgets(buf, sizeof(buf), fp)) {
+    char *p = strstr(buf, "Chipset Model:");
+    if (!p) p = strstr(buf, "Chip:");
+    if (p) {
+      p = strchr(p, ':');
+      if (p) {
+        p++;
+        while (*p == ' ') p++;
+        int len = strlen(p);
+        while (len > 0 && (p[len-1]=='\n'||p[len-1]=='\r')) p[--len]='\0';
+        if (len > 0 && len < (int)sizeof(gpu)) { memcpy(gpu, p, len+1); break; }
+      }
+    }
+  }
+  pclose(fp);
+  if (gpu[0])
+    add_info("GPU", "%s", gpu);
+#else
   DIR *d = opendir("/sys/class/drm");
   if (!d)
     return;
@@ -1595,9 +1794,38 @@ static void gather_gpu(void) {
       add_info("GPU", "%s", name);
   }
   closedir(d);
+#endif
 }
 
 static void gather_memory(void) {
+#ifdef __APPLE__
+  long long total = sysctl_long("hw.memsize");
+  if (total <= 0) return;
+
+  long page_size = 4096;
+  long long free_pages = 0, inactive_pages = 0, speculative_pages = 0;
+  FILE *fp = popen("vm_stat 2>/dev/null", "r");
+  if (fp) {
+    char buf[128];
+    while (fgets(buf, sizeof(buf), fp)) {
+      if (sscanf(buf, "Pages free: %lld.", &free_pages) == 1) {}
+      else if (sscanf(buf, "Pages inactive: %lld.", &inactive_pages) == 1) {}
+      else if (sscanf(buf, "Pages speculative: %lld.", &speculative_pages) == 1) {}
+      else if (strstr(buf, "page size of")) {
+        sscanf(buf, "Mach Virtual Memory Statistics: (page size of %ld)", &page_size);
+      }
+    }
+    pclose(fp);
+  }
+  long long avail = (free_pages + inactive_pages + speculative_pages) * page_size;
+
+  float used_gib = (total - avail) / 1073741824.0f;
+  float total_gib = total / 1073741824.0f;
+  int pct = (int)((total - avail) * 100 / total);
+  const char *color = pct >= 80 ? "31" : pct >= 50 ? "93" : "32";
+  add_info("Memory", "%.2f GiB / %.2f GiB (\033[%sm%d%%\033[0m)", used_gib,
+           total_gib, color, pct);
+#else
   long long total = 0, avail = 0;
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp)
@@ -1622,9 +1850,23 @@ static void gather_memory(void) {
 
   add_info("Memory", "%.2f GiB / %.2f GiB (\033[%sm%d%%\033[0m)", used_gib,
            total_gib, color, pct);
+#endif
 }
 
 static void gather_swap(void) {
+#ifdef __APPLE__
+  char swapstr[256] = "";
+  if (!sysctl_str("vm.swapusage", swapstr, sizeof(swapstr)))
+    return;
+  float total_mb = 0, used_mb = 0;
+  sscanf(swapstr, "swap on %*s size %fM, allocated %fM", &total_mb, &used_mb);
+  if (total_mb <= 0) return;
+  float free_mb = total_mb - used_mb;
+  int pct = (int)(used_mb * 100 / total_mb);
+  const char *color = pct >= 80 ? "31" : pct >= 50 ? "93" : "32";
+  add_info("Swap", "%.2f MiB / %.2f MiB (\033[%sm%d%%\033[0m)",
+           used_mb, total_mb, color, pct);
+#else
   long long total = 0, free_s = 0;
   FILE *fp = fopen("/proc/meminfo", "r");
   if (!fp)
@@ -1650,6 +1892,7 @@ static void gather_swap(void) {
   else
     add_info("Swap", "%.2f MiB / %.2f MiB (\033[%sm%d%%\033[0m)",
              used / 1024.0f, total / 1024.0f, color, pct);
+#endif
 }
 
 static void gather_disk(void) {
@@ -1663,6 +1906,23 @@ static void gather_disk(void) {
   int pct = (int)(used_gib * 100 / total_gib);
   const char *color = pct >= 80 ? "31" : pct >= 50 ? "93" : "32";
 
+#ifdef __APPLE__
+  char fstype[32] = "";
+  struct statfs *mnts;
+  int count = getmntinfo(&mnts, MNT_NOWAIT);
+  for (int i = 0; i < count; i++) {
+    if (strcmp(mnts[i].f_mntonname, "/") == 0) {
+      strncpy(fstype, mnts[i].f_fstypename, sizeof(fstype) - 1);
+      break;
+    }
+  }
+  if (fstype[0])
+    add_info("Disk (/)", "%.2f GiB / %.2f GiB (\033[%sm%d%%\033[0m) - %s",
+             used_gib, total_gib, color, pct, fstype);
+  else
+    add_info("Disk (/)", "%.2f GiB / %.2f GiB (\033[%sm%d%%\033[0m)", used_gib,
+             total_gib, color, pct);
+#else
   // Get filesystem type from /proc/mounts
   char fstype[32] = "";
   FILE *fp = fopen("/proc/mounts", "r");
@@ -1687,9 +1947,58 @@ static void gather_disk(void) {
   else
     add_info("Disk (/)", "%.2f GiB / %.2f GiB (\033[%sm%d%%\033[0m)", used_gib,
              total_gib, color, pct);
+#endif
 }
 
 static void gather_battery(void) {
+#ifdef __APPLE__
+  CFTypeRef info = IOPSCopyPowerSourcesInfo();
+  if (!info) return;
+  CFArrayRef sources = IOPSCopyPowerSourcesList(info);
+  if (!sources || CFArrayGetCount(sources) == 0) {
+    if (sources) CFRelease(sources);
+    CFRelease(info);
+    return;
+  }
+  CFDictionaryRef src = IOPSGetPowerSourceDescription(info, CFArrayGetValueAtIndex(sources, 0));
+  if (!src) { CFRelease(sources); CFRelease(info); return; }
+
+  int capacity = -1;
+  CFNumberRef capRef = CFDictionaryGetValue(src, kIOPSCurrentCapacityKey);
+  if (capRef) CFNumberGetValue(capRef, kCFNumberIntType, &capacity);
+
+  int isCharging = 0;
+  CFBooleanRef chgRef = CFDictionaryGetValue(src, kIOPSIsChargingKey);
+  if (chgRef) isCharging = CFBooleanGetValue(chgRef);
+
+  int timeToEmpty = -1;
+  CFNumberRef tteRef = CFDictionaryGetValue(src, kIOPSTimeToEmptyKey);
+  if (tteRef) CFNumberGetValue(tteRef, kCFNumberIntType, &timeToEmpty);
+
+  CFRelease(sources);
+  CFRelease(info);
+
+  if (capacity < 0) return;
+
+  const char *status = isCharging ? "Charging" : (timeToEmpty >= 0 ? "Discharging" : "");
+  char time_str[64] = "";
+  if (timeToEmpty > 0 && !isCharging) {
+    int h = timeToEmpty / 60, m = timeToEmpty % 60;
+    if (h > 0)
+      snprintf(time_str, sizeof(time_str), "%d hour%s, %d min%s remaining",
+               h, h==1?"":"s", m, m==1?"":"s");
+    else
+      snprintf(time_str, sizeof(time_str), "%d min%s remaining", m, m==1?"":"s");
+  }
+
+  const char *color = capacity >= 50 ? "32" : capacity >= 20 ? "93" : "31";
+  if (time_str[0] && status[0])
+    add_info("Battery", "\033[%sm%d%%\033[0m (%s) [%s]", color, capacity, time_str, status);
+  else if (status[0])
+    add_info("Battery", "\033[%sm%d%%\033[0m [%s]", color, capacity, status);
+  else
+    add_info("Battery", "\033[%sm%d%%\033[0m", color, capacity);
+#else
   // Find first battery in /sys/class/power_supply
   char bat_name[64] = "";
   DIR *psd = opendir("/sys/class/power_supply");
@@ -1823,6 +2132,7 @@ static void gather_battery(void) {
     else
       add_info("Battery", "\033[%sm%d%%\033[0m", color, capacity);
   }
+#endif
 }
 
 static void gather_terminal(void) {
@@ -1842,6 +2152,33 @@ static void gather_terminal(void) {
   } else if (getenv("TERMINAL_EMULATOR")) {
     strncpy(term, getenv("TERMINAL_EMULATOR"), sizeof(term) - 1);
   } else {
+#ifdef __APPLE__
+    // Walk up the process tree using sysctl
+    pid_t pid = getpid();
+    for (int depth = 0; depth < 4; depth++) {
+      struct kinfo_proc kp;
+      size_t klen = sizeof(kp);
+      int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+      if (sysctl(mib, 4, &kp, &klen, NULL, 0) != 0) break;
+      pid_t ppid = kp.kp_eproc.e_ppid;
+      if (ppid <= 0) break;
+      pid = ppid;
+
+      mib[3] = pid;
+      klen = sizeof(kp);
+      if (sysctl(mib, 4, &kp, &klen, NULL, 0) != 0) break;
+      strncpy(term, kp.kp_proc.p_comm, sizeof(term) - 1);
+      term[sizeof(term) - 1] = '\0';
+
+      if (term[0] && strcmp(term, "bash") != 0 && strcmp(term, "zsh") != 0 &&
+          strcmp(term, "sh") != 0 && strcmp(term, "dash") != 0 &&
+          strcmp(term, "fish") != 0 && strcmp(term, "nu") != 0 &&
+          strcmp(term, "elvish") != 0 && strcmp(term, "xonsh") != 0 &&
+          strcmp(term, "tcsh") != 0 && strcmp(term, "csh") != 0)
+        break;
+      term[0] = '\0';
+    }
+#else
     // Walk up the process tree by reading /proc directly
     pid_t pid = getpid();
     for (int depth = 0; depth < 4; depth++) {
@@ -1879,6 +2216,7 @@ static void gather_terminal(void) {
         break;
       term[0] = '\0';
     }
+#endif
   }
   if (term[0])
     add_info("Terminal", "%s", term);
@@ -1892,7 +2230,11 @@ static void gather_ip(void) {
     if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET)
       continue;
     // Skip loopback
+#ifdef __APPLE__
+    if (strcmp(ifa->ifa_name, "lo0") == 0)
+#else
     if (strcmp(ifa->ifa_name, "lo") == 0)
+#endif
       continue;
     struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
     char addr[INET_ADDRSTRLEN];
@@ -1954,24 +2296,58 @@ static void read_gtk_setting(const char *key, char *out, int maxlen) {
 }
 
 static void gather_theme(void) {
+#ifdef __APPLE__
+  char style[64] = "";
+  FILE *fp = popen("defaults read -g AppleInterfaceStyle 2>/dev/null", "r");
+  if (fp) {
+    if (fgets(style, sizeof(style), fp)) {
+      int len = strlen(style);
+      while (len > 0 && (style[len-1]=='\n'||style[len-1]=='\r')) style[--len]='\0';
+    }
+    pclose(fp);
+  }
+  if (style[0])
+    add_info("Theme", "%s", style);
+  else
+    add_info("Theme", "Light");
+#else
   char theme[64] = "";
   read_gtk_setting("gtk-theme-name", theme, sizeof(theme));
   if (theme[0])
     add_info("Theme", "%s [GTK3]", theme);
+#endif
 }
 
 static void gather_icons(void) {
+#ifdef __APPLE__
+  add_info("Icons", "System");
+#else
   char icons[64] = "";
   read_gtk_setting("gtk-icon-theme-name", icons, sizeof(icons));
   if (icons[0])
     add_info("Icons", "%s [GTK3]", icons);
+#endif
 }
 
 static void gather_font(void) {
+#ifdef __APPLE__
+  char font[128] = "";
+  FILE *fp = popen("defaults read NSGlobalDomain AppleFont 2>/dev/null", "r");
+  if (fp) {
+    if (fgets(font, sizeof(font), fp)) {
+      int len = strlen(font);
+      while (len > 0 && (font[len-1]=='\n'||font[len-1]=='\r')) font[--len]='\0';
+    }
+    pclose(fp);
+  }
+  if (font[0])
+    add_info("Font", "%s", font);
+#else
   char font[128] = "";
   read_gtk_setting("gtk-font-name", font, sizeof(font));
   if (font[0])
     add_info("Font", "%s [GTK3]", font);
+#endif
 }
 
 // Render buffers: shade index (-1 = empty, 0..smax = shading char), z-buffer, color
@@ -2225,6 +2601,9 @@ static void set_distro_colors(const char *distro) {
              strcasecmp(distro, "opensuse-leap") == 0 ||
              strcasecmp(distro, "opensuse") == 0) {
     color_outer = "\033[1;32m";
+    color_inner = "\033[1;37m";
+  } else if (strcasecmp(distro, "macos") == 0) {
+    color_outer = "\033[1;36m";
     color_inner = "\033[1;37m";
   }
 }
