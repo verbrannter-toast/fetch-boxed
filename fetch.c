@@ -720,6 +720,8 @@ static int config_spin_y = -1;
 static char config_shading[128] = "";
 static char config_separator[8] = "-";
 static float config_depth = 1.0f;
+static char config_logo_outer[32] = "";
+static char config_logo_inner[32] = "";
 
 // Light direction presets
 static float light_x = 0.4082f, light_y = 0.8165f, light_z = -0.4082f;
@@ -849,6 +851,30 @@ static void load_config(void) {
       config_depth = atof(line + 6);
       if (config_depth < 0.1f) config_depth = 0.1f;
       if (config_depth > 10.0f) config_depth = 10.0f;
+      continue;
+    }
+    if (strncmp(line, "logo_outer=", 11) == 0) {
+      char *val = line + 11;
+      if (strcmp(val, "red") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;31m");
+      else if (strcmp(val, "green") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;32m");
+      else if (strcmp(val, "yellow") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;33m");
+      else if (strcmp(val, "blue") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;34m");
+      else if (strcmp(val, "magenta") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;35m");
+      else if (strcmp(val, "cyan") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;36m");
+      else if (strcmp(val, "white") == 0) snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;37m");
+      else snprintf(config_logo_outer, sizeof(config_logo_outer), "\033[1;%sm", val);
+      continue;
+    }
+    if (strncmp(line, "logo_inner=", 11) == 0) {
+      char *val = line + 11;
+      if (strcmp(val, "red") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;31m");
+      else if (strcmp(val, "green") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;32m");
+      else if (strcmp(val, "yellow") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;33m");
+      else if (strcmp(val, "blue") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;34m");
+      else if (strcmp(val, "magenta") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;35m");
+      else if (strcmp(val, "cyan") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;36m");
+      else if (strcmp(val, "white") == 0) snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;37m");
+      else snprintf(config_logo_inner, sizeof(config_logo_inner), "\033[1;%sm", val);
       continue;
     }
     if (strncmp(line, "light=", 6) == 0) {
@@ -2801,6 +2827,10 @@ int main(int argc, char **argv) {
 
   if (distro[0])
     set_distro_colors(distro);
+  if (config_logo_outer[0])
+    color_outer = config_logo_outer;
+  if (config_logo_inner[0])
+    color_inner = config_logo_inner;
 
   typedef void (*gather_fn)(void);
   gather_fn fns[F_COUNT] = {
@@ -3102,7 +3132,8 @@ int main(int argc, char **argv) {
       memcpy(p, clr_seq, 4); p += 4;
       *p++ = '\n';
     }
-    write(STDOUT_FILENO, out_buf, p - out_buf);
+    if (write(STDOUT_FILENO, out_buf, p - out_buf) < 0)
+      break;
     usleep(50000);
   }
 
