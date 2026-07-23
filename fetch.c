@@ -49,11 +49,16 @@ static void handle_winch(int sig) {
   term_resized = 1;
 }
 
-static int get_term_rows(void) {
+static void get_term_size(int *rows, int *cols) {
   struct winsize ws;
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
-    return ws.ws_row;
-  return 0;
+  *rows = 0;
+  *cols = 0;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+    if (ws.ws_row > 0)
+      *rows = ws.ws_row;
+    if (ws.ws_col > 0)
+      *cols = ws.ws_col;
+  }
 }
 
 #define ANIM_WIDTH 60
@@ -61,6 +66,11 @@ static int get_term_rows(void) {
 #define GAP 2
 
 static int render_height = 36;
+static int logo_height = 36;        // rows the logo may span (<= render_height)
+static int anim_width = ANIM_WIDTH; // canvas columns, shrinks on narrow terminals
+static int layout_stacked = 0;      // info below the logo instead of beside it
+static int info_clip_cols = -1;     // clip info lines to this many visible columns
+static int stacked_info_rows = 0;   // info lines shown in stacked layout
 #define PI 3.14159265f
 
 // --- UTF-8 helpers ---
@@ -89,6 +99,60 @@ static int skip_ansi(const char *p) {
   if (p[i])
     i++; // skip the final letter
   return i;
+}
+
+// Visible columns of a string, ignoring ANSI escapes (codepoint = 1 column)
+static int visible_width(const char *s) {
+  int w = 0;
+  while (*s) {
+    int a = skip_ansi(s);
+    if (a) {
+      s += a;
+      continue;
+    }
+    int len = utf8_char_len((unsigned char)*s);
+    while (len > 0 && *s) {
+      s++;
+      len--;
+    }
+    w++;
+  }
+  return w;
+}
+
+// Copy s into p clipped to max_cols visible columns (ANSI passes through,
+// max_cols < 0 = no limit). Appends a reset if the clip cut a color short.
+static char *emit_clipped(char *p, char *end, const char *s, int max_cols) {
+  int w = 0, had_ansi = 0, cut = 0;
+  while (*s && p + 8 < end) {
+    int a = skip_ansi(s);
+    if (a) {
+      if (p + a + 8 >= end)
+        break;
+      memcpy(p, s, a);
+      p += a;
+      s += a;
+      had_ansi = 1;
+      continue;
+    }
+    if (max_cols >= 0 && w >= max_cols) {
+      cut = 1;
+      break;
+    }
+    int len = utf8_char_len((unsigned char)*s);
+    int actual = 0;
+    while (actual < len && s[actual])
+      actual++;
+    memcpy(p, s, actual);
+    p += actual;
+    s += actual;
+    w++;
+  }
+  if (had_ansi && cut && p + 4 < end) {
+    memcpy(p, "\033[0m", 4);
+    p += 4;
+  }
+  return p;
 }
 
 // Parse a UTF-8 string into individual codepoints
@@ -2414,6 +2478,97 @@ static void clear_buf(void) {
   memset(colorbuf, 0, n * sizeof(int));
 }
 
+// Sizing + layout, shared by startup and SIGWINCH so a resize reproduces
+// the startup look instead of inheriting whatever the terminal height is.
+// Wide terminals get the full 60-col canvas beside the info; medium ones
+// shrink the canvas to keep the info intact; phone-width ones stack the
+// info below the logo. Info lines clip instead of wrapping.
+static void apply_layout(int show_info) {
+  int rows = 0, cols = 0;
+  get_term_size(&rows, &cols);
+  if (rows > 1)
+    rows--; // leave 1 row margin to prevent scroll-jitter
+
+  // Ideal height: config/flag override > auto-fit to info lines > default
+  int ideal = 36;
+  if (config_height > 0) {
+    ideal = config_height;
+  } else if (show_info && fetch_line_count > 0) {
+    int info_height = fetch_line_count + 2;
+    ideal = info_height > 36 ? info_height : 36;
+  }
+  ideal = (int)(ideal * size_scale);
+  if (ideal < 20)
+    ideal = 20;
+  if (ideal > MAX_HEIGHT)
+    ideal = MAX_HEIGHT;
+
+  render_height = ideal;
+  anim_width = ANIM_WIDTH;
+  layout_stacked = 0;
+  info_clip_cols = -1;
+  stacked_info_rows = 0;
+
+  if (cols <= 0) { // no width info (not a tty): cap height only
+    if (rows > 0 && render_height > rows)
+      render_height = rows;
+    logo_height = render_height;
+    return;
+  }
+
+  int info_cols = 0;
+  if (show_info)
+    for (int i = 0; i < fetch_line_count; i++) {
+      int w = visible_width(fetch_lines[i]);
+      if (w > info_cols)
+        info_cols = w;
+    }
+
+  if (show_info && cols < ANIM_WIDTH + GAP + info_cols) {
+    // Full canvas + info doesn't fit: give the info what it needs and
+    // shrink the canvas, unless that leaves the canvas unreadable —
+    // then stack the info below a full-width logo instead.
+    anim_width = cols - GAP - info_cols;
+    if (anim_width < 20) {
+      layout_stacked = 1;
+      anim_width = cols < ANIM_WIDTH ? cols : ANIM_WIDTH;
+    }
+  } else if (anim_width > cols) {
+    anim_width = cols;
+  }
+
+  // The projection needs ~5/3 the columns of its rows; shrink the logo on
+  // narrow canvases instead of clipping its sides. Only the logo shrinks:
+  // render_height keeps covering the info lines so none are dropped.
+  int wcap = anim_width * 3 / 5;
+
+  if (layout_stacked) {
+    if (render_height > wcap)
+      render_height = wcap;
+    stacked_info_rows = fetch_line_count;
+    if (rows > 0) {
+      int budget = rows - fetch_line_count - 1; // 1 spacer row
+      if (budget < render_height)
+        render_height = budget;
+      if (render_height < 6)
+        render_height = 0; // too small to read: show info only
+      int info_budget = rows - (render_height ? render_height + 1 : 0);
+      if (stacked_info_rows > info_budget)
+        stacked_info_rows = info_budget < 0 ? 0 : info_budget;
+    }
+    logo_height = render_height;
+    info_clip_cols = cols;
+  } else {
+    if (show_info)
+      info_clip_cols = cols - anim_width - GAP;
+    if (rows > 0 && render_height > rows)
+      render_height = rows;
+    logo_height = render_height > wcap ? wcap : render_height;
+    if (!show_info)
+      render_height = logo_height; // no info: no point in blank rows
+  }
+}
+
 static void build_points(void) {
   const float sx = 0.07f;
   const float sy = 0.14f;
@@ -2877,34 +3032,14 @@ int main(int argc, char **argv) {
     }
     current_field = -1;
   }
-  // Set render height: config/flag override > auto-fit to info lines > default
-  if (config_height > 0) {
-    render_height = config_height;
-  } else if (show_info && fetch_line_count > 0) {
-    // Use whichever is taller: info lines or default logo size
-    int info_height = fetch_line_count + 2;
-    render_height = info_height > 36 ? info_height : 36;
-  }
-  // Apply size scale
-  render_height = (int)(render_height * size_scale);
-  if (render_height < 20)
-    render_height = 20;
-  if (render_height > MAX_HEIGHT)
-    render_height = MAX_HEIGHT;
-
-  // Cap to terminal height if we can detect it (leave 1 row margin)
-  int term_rows = get_term_rows();
-  if (term_rows > 1)
-    term_rows--;
-  if (term_rows > 0 && render_height > term_rows)
-    render_height = term_rows;
+  apply_layout(show_info);
 
   build_points();
   compute_threshold();
 
   float A = 0.0f;
   float B = 0.0f;
-  float K1 = 37.0f * render_height / 36.0f;
+  float K1 = 37.0f * logo_height / 36.0f;
   const float K2 = 5.5f;
   // Pre-compute Blinn-Phong half-vector (view direction is constant (0,0,-1))
   const float hx0 = (light_x + 0.0f), hy0 = (light_y + 0.0f), hz0 = (light_z - 1.0f);
@@ -2934,18 +3069,15 @@ int main(int argc, char **argv) {
     struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
     if (poll(&pfd, 1, 0) > 0)
       break;
-    // Handle terminal resize
+    // Handle terminal resize: recompute the same layout as startup
     if (term_resized) {
       term_resized = 0;
-      int new_rows = get_term_rows();
-      // Leave 1 row margin to prevent scroll-jitter
-      if (new_rows > 1)
-        new_rows--;
-      if (new_rows > 0 && new_rows != render_height) {
-        render_height = new_rows;
-        if (render_height > MAX_HEIGHT)
-          render_height = MAX_HEIGHT;
-        K1 = 37.0f * render_height / 36.0f;
+      int old_h = render_height, old_w = anim_width;
+      int old_stacked = layout_stacked, old_clip = info_clip_cols;
+      apply_layout(show_info);
+      if (render_height != old_h || anim_width != old_w ||
+          layout_stacked != old_stacked || info_clip_cols != old_clip) {
+        K1 = 37.0f * logo_height / 36.0f;
         printf("\033[2J");
         fflush(stdout);
       }
@@ -2979,13 +3111,14 @@ int main(int argc, char **argv) {
     float cB = cosf(B), sB = sinf(B);
 
     const float lx = light_x, ly = light_y, lz = light_z;
-    const float y_center = fetch_line_count > 0
+    const float y_center = (!layout_stacked && fetch_line_count > 0 &&
+                            fetch_line_count + 2 <= render_height)
                               ? fetch_start + fetch_line_count * 0.5f
                               : render_height * 0.5f;
     const int smax = shading_count - 1;
-    const float half_aw = (float)ANIM_WIDTH * 0.5f;
+    const float half_aw = (float)anim_width * 0.5f;
     const float k1x2 = K1 * 2.0f;
-    const int aw = ANIM_WIDTH;
+    const int aw = anim_width;
 
     for (int i = 0; i < POINT_COUNT; i++) {
       float px = PX[i], py = PY[i], pz = PZ[i];
@@ -3042,7 +3175,7 @@ int main(int argc, char **argv) {
     // Batch entire frame into a single write (reuse buffer across frames)
     static char *out_buf = NULL;
     static size_t out_cap = 0;
-    size_t need = render_height * 2048u + 64;
+    size_t need = (render_height + stacked_info_rows + 2) * 2048u + 64;
     if (need > out_cap) {
       free(out_buf);
       out_buf = malloc(need);
@@ -3070,7 +3203,7 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < render_height && p + 8 < end; i++) {
       if (!use_color) {
-        for (int j = 0; j < ANIM_WIDTH && p + 4 < end; j++) {
+        for (int j = 0; j < aw && p + 4 < end; j++) {
           int ci = shade_idx[i][j];
           if (ci < 0) { *p++ = ' '; continue; }
           const char *sc = shading_chars[ci];
@@ -3080,7 +3213,7 @@ int main(int argc, char **argv) {
         }
       } else {
         int prev_color = -1;
-        for (int j = 0; j < ANIM_WIDTH && p + 16 < end; j++) {
+        for (int j = 0; j < aw && p + 16 < end; j++) {
           int ci = shade_idx[i][j];
           if (ci < 0) {
             if (prev_color != -1) {
@@ -3118,19 +3251,27 @@ int main(int argc, char **argv) {
       }
 
       int fi = i - fetch_start;
-      if (fi >= 0 && fi < fetch_line_count && p + GAP + 4 < end) {
+      if (!layout_stacked && fi >= 0 && fi < fetch_line_count &&
+          p + GAP + 4 < end) {
         memset(p, ' ', GAP); p += GAP;
-        size_t flen = strlen(fetch_lines[fi]);
-        size_t remain = end - p;
-        if (flen > remain) flen = remain;
-        memcpy(p, fetch_lines[fi], flen);
-        p += flen;
+        p = emit_clipped(p, end, fetch_lines[fi], info_clip_cols);
       }
 
       // Erase to end of line + newline
       if (p + 8 >= end) break;
       memcpy(p, clr_seq, 4); p += 4;
       *p++ = '\n';
+    }
+    if (layout_stacked && stacked_info_rows > 0) {
+      if (render_height > 0 && p + 8 < end) {
+        memcpy(p, clr_seq, 4); p += 4;
+        *p++ = '\n';
+      }
+      for (int i = 0; i < stacked_info_rows && p + 16 < end; i++) {
+        p = emit_clipped(p, end, fetch_lines[i], info_clip_cols);
+        memcpy(p, clr_seq, 4); p += 4;
+        *p++ = '\n';
+      }
     }
     if (write(STDOUT_FILENO, out_buf, p - out_buf) < 0)
       break;
