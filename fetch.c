@@ -1043,7 +1043,7 @@ static void add_info(const char *label, const char *fmt, ...) {
 }
 
 // Wrap the info lines (skipping the "user@host" title + separator) in a
-// box, fastfetch "custom module" style. Must run once, after all initial
+// box, fastfetch Caelestia style. Must run once, after all initial
 // gather_*() calls, and shifts field_line[] so later live-refresh writes
 // (see add_info above) land on the right row.
 static void box_wrap_lines(void) {
