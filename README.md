@@ -4,6 +4,8 @@ This is a fork of the original 3D fetch tool called "[fetch](https://github.com/
 
 ![Demo gif](https://github.com/user-attachments/assets/eae52a66-1566-4849-accf-9b621a93b762)
 
+All credit goes to the original creator [areofyl](https://github.com/areofyl)
+
 ---
 
 # Original README
