@@ -1004,6 +1004,9 @@ static void add_line(const char *line) {
 
 // Format a labeled info line using the configured label color.
 // If the current field already has a line index, update it in place.
+
+static int box_width = 0; // >0 once box_wrap_lines() has run
+
 static void add_info(const char *label, const char *fmt, ...) {
   char val[MAX_LINE_LEN];
   va_list ap;
@@ -1020,13 +1023,77 @@ static void add_info(const char *label, const char *fmt, ...) {
   // don't overwrite themselves).
   if (is_refresh_pass && current_field >= 0 && field_line[current_field] >= 0) {
     int idx = field_line[current_field];
-    strncpy(fetch_lines[idx], line, MAX_LINE_LEN - 1);
+    if (box_width > 0) {
+      int w = visible_width(line);
+      int pad = box_width - w;
+      if (pad < 0) pad = 0;
+      char boxed[MAX_LINE_LEN];
+      snprintf(boxed, sizeof(boxed), "\xe2\x94\x82 %s%*s \xe2\x94\x82", line,
+               pad, "");
+      strncpy(fetch_lines[idx], boxed, MAX_LINE_LEN - 1);
+    } else {
+      strncpy(fetch_lines[idx], line, MAX_LINE_LEN - 1);
+    }
     fetch_lines[idx][MAX_LINE_LEN - 1] = '\0';
     return;
   }
   if (current_field >= 0)
     field_line[current_field] = fetch_line_count;
   add_line(line);
+}
+
+// Wrap the info lines (skipping the "user@host" title + separator) in a
+// box, fastfetch "custom module" style. Must run once, after all initial
+// gather_*() calls, and shifts field_line[] so later live-refresh writes
+// (see add_info above) land on the right row.
+static void box_wrap_lines(void) {
+  int start = 2; // 0 = title, 1 = separator underline
+  if (start >= fetch_line_count)
+    return;
+
+  int max_w = 0;
+  for (int i = start; i < fetch_line_count; i++) {
+    int w = visible_width(fetch_lines[i]);
+    if (w > max_w)
+      max_w = w;
+  }
+  box_width = max_w;
+
+  char content[MAX_FETCH_LINES][MAX_LINE_LEN];
+  int content_count = fetch_line_count - start;
+  for (int i = 0; i < content_count; i++)
+    strncpy(content[i], fetch_lines[start + i], MAX_LINE_LEN - 1);
+
+  char border[MAX_LINE_LEN];
+  char *bp = border;
+  memcpy(bp, "\xe2\x95\xad", 3); bp += 3; // ╭
+  for (int i = 0; i < max_w + 2; i++) { memcpy(bp, "\xe2\x94\x80", 3); bp += 3; } // ─
+  memcpy(bp, "\xe2\x95\xae", 3); bp += 3; // ╮
+  *bp = '\0';
+  strncpy(fetch_lines[start], border, MAX_LINE_LEN - 1);
+
+  int out = start + 1;
+  for (int i = 0; i < content_count && out < MAX_FETCH_LINES; i++, out++) {
+    int w = visible_width(content[i]);
+    int pad = max_w - w;
+    if (pad < 0) pad = 0;
+    snprintf(fetch_lines[out], MAX_LINE_LEN, "\xe2\x94\x82 %s%*s \xe2\x94\x82",
+             content[i], pad, "");
+  }
+
+  bp = border;
+  memcpy(bp, "\xe2\x95\xb0", 3); bp += 3; // ╰
+  for (int i = 0; i < max_w + 2; i++) { memcpy(bp, "\xe2\x94\x80", 3); bp += 3; } // ─
+  memcpy(bp, "\xe2\x95\xaf", 3); bp += 3; // ╯
+  *bp = '\0';
+  if (out < MAX_FETCH_LINES)
+    strncpy(fetch_lines[out++], border, MAX_LINE_LEN - 1);
+
+  fetch_line_count = out;
+
+  for (int i = 0; i < F_COUNT; i++)
+    if (field_line[i] >= start)
+      field_line[i] += 1;
 }
 
 static void gather_title(void) {
@@ -3032,6 +3099,7 @@ int main(int argc, char **argv) {
     }
     current_field = -1;
   }
+  box_wrap_lines();
   apply_layout(show_info);
 
   build_points();

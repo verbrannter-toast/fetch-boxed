@@ -1,3 +1,12 @@
+# fetch-boxed
+
+This is a fork of the original 3D fetch tool called "[fetch](https://github.com/areofyl/fetch)" by areofyl. All I did, was add a box around the system data to make it match the fastfetch look of [Caelestia](https://github.com/caelestia-dots/caelestia). The only file I edited for that is [fetch.c](/fetch.c). Here is what it looks like:
+
+
+
+
+# Original README
+
 # fetch
 
 A donut.c-inspired fetch tool that spins your distro logo in 3D with live-updating system info.
