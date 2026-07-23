@@ -82,6 +82,23 @@ rpmbuild -ba fetch.spec
 sudo dnf install ~/rpmbuild/RPMS/*/fetch-*.rpm
 ```
 
+### openSUSE
+You can install `fetch` from the Open Build Service:
+
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:RealOrangeKun/openSUSE_Tumbleweed/home:RealOrangeKun.repo
+sudo zypper refresh
+sudo zypper install fetch
+```
+
+Or build an RPM package locally:
+
+```bash
+sudo zypper install -t pattern devel_basis
+rpmbuild -ba fetch.spec
+sudo zypper install ~/rpmbuild/RPMS/*/fetch-*.rpm
+```
+
 ### Gentoo Linux (GURU)
 You can install `fetch` from the GURU repository using:
 
