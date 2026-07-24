@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Youssef Tarek <amazingritro66@gmail.com>
 Build-Depends: debhelper-compat (= 13)
 Standards-Version: 4.6.2
-Homepage: https://github.com/RealOrangeKun/fetch
+Homepage: https://github.com/areofyl/fetch
 Rules-Requires-Root: no
 
 Package: fetch
