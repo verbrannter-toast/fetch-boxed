@@ -1,19 +1,3 @@
-# fetch-boxed
-
-This is a fork of the original 3D fetch tool called "[fetch](https://github.com/areofyl/fetch)" by areofyl. All I did, was add a box around the system data to make it match the fastfetch look of [Caelestia](https://github.com/caelestia-dots/caelestia). The only file I edited for that is [fetch.c](/fetch.c). Here is what it looks like:
-
-![Demo gif](https://github.com/user-attachments/assets/eae52a66-1566-4849-accf-9b621a93b762)
-
-## Instructions for Config
-
-In order to make it easy to turn on or off the boxed look, I added the option to turn it on or off in the config file (as listed further down in the Config part). The keyword for that is `box=1`, which you can add anywhere inside your config file
-
-All credit goes to the original creator [areofyl](https://github.com/areofyl)
-
----
-
-# Original README
-
 # fetch
 
 A donut.c-inspired fetch tool that spins your distro logo in 3D with live-updating system info.
@@ -229,6 +213,7 @@ colors
 # label_color=magenta   (red, green, yellow, blue, magenta, cyan, white)
 # separator=─           (character for the title separator)
 # shading=.,-~:;=!*#$@  (characters for 3D shading, supports UTF-8)
+# box=0                 (adds a box around the system-data, 0 = off, 1 = on)
 
 # logo colors (override distro defaults)
 # logo_outer=magenta    (outer/heavy character color)
