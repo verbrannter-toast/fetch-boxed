@@ -781,6 +781,7 @@ static float size_scale = 1.0f;
 static float config_speed = 0.0f; // 0 = use flag/default
 static int config_spin_x = -1;    // -1 = use flag/default
 static int config_spin_y = -1;
+static int config_box = 0;        // 0 = off (default), 1 = on
 static char config_shading[128] = "";
 static char config_separator[8] = "-";
 static float config_depth = 1.0f;
@@ -901,6 +902,14 @@ static void load_config(void) {
       char *val = line + 5;
       config_spin_x = (strchr(val, 'x') || strchr(val, 'X')) ? 1 : 0;
       config_spin_y = (strchr(val, 'y') || strchr(val, 'Y')) ? 1 : 0;
+      continue;
+    }
+    if (strncmp(line, "box=", 4) == 0) {
+      char *val = line + 4;
+      config_box = (strcmp(val, "1") == 0 || strcasecmp(val, "y") == 0 ||
+                    strcasecmp(val, "yes") == 0 || strcasecmp(val, "true") == 0)
+                       ? 1
+                       : 0;
       continue;
     }
     if (strncmp(line, "shading=", 8) == 0) {
@@ -3099,7 +3108,8 @@ int main(int argc, char **argv) {
     }
     current_field = -1;
   }
-  box_wrap_lines();
+  if (config_box)
+    box_wrap_lines();
   apply_layout(show_info);
 
   build_points();
