@@ -4,6 +4,10 @@ This is a fork of the original 3D fetch tool called "[fetch](https://github.com/
 
 ![Demo gif](https://github.com/user-attachments/assets/eae52a66-1566-4849-accf-9b621a93b762)
 
+## Instructions for Config
+
+In order to make it easy to turn on or off the boxed look, I added the option to turn it off in the cofig file (as listed further down in the Config part). The keyword for that is `box=1`, which you can add anywhere inside your config file
+
 All credit goes to the original creator [areofyl](https://github.com/areofyl)
 
 ---
